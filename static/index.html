@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>知序 · 学校事务</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">序</div>
+        <div><strong>知序</strong><span>学校事务助理</span></div>
+      </div>
+      <nav>
+        <button class="nav-item active" data-view="today"><span>◈</span>今日总览</button>
+        <button class="nav-item" data-view="calendar"><span>▦</span>日程月历</button>
+        <button class="nav-item" data-view="groups"><span>◉</span>关注群聊</button>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="sync-card">
+          <div class="sync-row"><span id="statusDot" class="status-dot"></span><strong id="statusText">正在连接</strong></div>
+          <p id="statusDetail">等待只读数据库初始化</p>
+          <button id="syncButton" class="ghost-button">立即同步</button>
+        </div>
+        <p class="safety-note">只读微信 · 永不代发</p>
+      </div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div>
+          <p id="dateLine" class="eyebrow"></p>
+          <h1 id="pageTitle">今日总览</h1>
+        </div>
+        <div class="top-actions">
+          <button id="notifyButton" class="secondary-button">开启通知</button>
+          <button id="addTaskButton" class="primary-button"><span>＋</span> 新建事项</button>
+        </div>
+      </header>
+
+      <section id="todayView" class="view active">
+        <div class="metric-grid">
+          <article class="metric-card accent"><span class="metric-label">未完成</span><strong id="openCount">0</strong><small>需要处理的事项</small></article>
+          <article class="metric-card danger"><span class="metric-label">已逾期</span><strong id="overdueCount">0</strong><small>优先处理</small></article>
+          <article class="metric-card warm"><span class="metric-label">今天</span><strong id="todayCount">0</strong><small>今日截止或发生</small></article>
+          <article class="metric-card cool"><span class="metric-label">附件待处理</span><strong id="missingCount">0</strong><small>需下载或手动查看</small></article>
+        </div>
+
+        <div class="content-grid">
+          <section class="panel task-panel">
+            <div class="panel-head">
+              <div><span class="section-kicker">FOCUS</span><h2>接下来要做</h2></div>
+              <div class="segmented"><button class="active" data-filter="open">进行中</button><button data-filter="all">全部</button></div>
+            </div>
+            <div id="taskList" class="task-list"><div class="empty-state">正在载入事项…</div></div>
+          </section>
+
+          <aside class="right-column">
+            <section class="panel mini-calendar-panel">
+              <div class="panel-head compact"><h2 id="miniMonthTitle">本月</h2><button id="openCalendarButton" class="icon-button">↗</button></div>
+              <div id="miniCalendar" class="mini-calendar"></div>
+            </section>
+            <section class="panel missing-panel">
+              <div class="panel-head compact"><div><span class="section-kicker">ATTACHMENTS</span><h2>附件守候</h2></div></div>
+              <div id="missingList" class="missing-list"><p class="muted">目前没有需要人工处理的附件</p></div>
+            </section>
+          </aside>
+        </div>
+      </section>
+
+      <section id="calendarView" class="view">
+        <section class="panel calendar-panel">
+          <div class="calendar-toolbar">
+            <div><span class="section-kicker">CALENDAR</span><h2 id="calendarTitle"></h2></div>
+            <div class="calendar-actions"><button id="prevMonth" class="icon-button">←</button><button id="todayMonth" class="secondary-button small">今天</button><button id="nextMonth" class="icon-button">→</button></div>
+          </div>
+          <div class="week-row"><span>周一</span><span>周二</span><span>周三</span><span>周四</span><span>周五</span><span>周六</span><span>周日</span></div>
+          <div id="monthGrid" class="month-grid"></div>
+        </section>
+      </section>
+
+      <section id="groupsView" class="view">
+        <section class="panel groups-panel">
+          <div class="panel-head groups-head">
+            <div><span class="section-kicker">SOURCES</span><h2>选择要关注的群聊</h2><p class="muted">只有勾选的群会进入资料库和 DeepSeek 分析。</p></div>
+            <label class="search-box"><span>⌕</span><input id="groupSearch" type="search" placeholder="搜索群聊"></label>
+          </div>
+          <div class="lookback-note"><strong>首次关注将回看最近 7 天</strong><span>之后检测到新消息会自动更新；取消关注不会删除已经生成的事项。</span></div>
+          <div id="groupList" class="group-list"><div class="empty-state">正在读取本地群聊…</div></div>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="taskDialog" class="modal">
+    <form method="dialog" id="taskForm">
+      <div class="modal-head"><div><span class="section-kicker">TASK</span><h2 id="dialogTitle">新建事项</h2></div><button type="button" data-close-dialog class="close-button" aria-label="关闭">×</button></div>
+      <input id="taskId" type="hidden">
+      <label>事项标题<input id="taskTitle" maxlength="180" required placeholder="例如：提交选课确认表"></label>
+      <div class="form-row">
+        <label>日期与时间<input id="taskDue" type="datetime-local"></label>
+        <label>优先级<select id="taskPriority"><option value="normal">普通</option><option value="high">重要</option><option value="urgent">紧急</option><option value="low">稍后</option></select></label>
+      </div>
+      <label>具体要求<textarea id="taskDescription" rows="5" placeholder="需要准备什么、在哪里提交…"></textarea></label>
+      <label>提前提醒<select id="taskReminder"><option value="1440">提前 1 天</option><option value="180">提前 3 小时</option><option value="60">提前 1 小时</option><option value="15">提前 15 分钟</option><option value="0">到点提醒</option></select></label>
+      <div id="taskEvidence" class="evidence-box hidden"></div>
+      <div class="modal-actions"><button type="button" data-close-dialog class="secondary-button">取消</button><button id="saveTaskButton" type="submit" class="primary-button">保存事项</button></div>
+    </form>
+  </dialog>
+
+  <div id="toastStack" class="toast-stack" aria-live="polite"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
