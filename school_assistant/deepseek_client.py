@@ -153,7 +153,7 @@ class DeepSeekClient:
 - related_message_ids 只能取输入中的 message_id。
 - 同一件事连续多条消息合并成一个任务。
 - 必须将新消息与“已有事项候选”做语义去重。同一活动/课程/讲堂的再次提醒、催办、措辞变化或补充说明，duplicate_task_id 填对应候选 task_id，不得新建。
-- 例如“通识课程开始选课”“通识课程选课提醒”“通识课程选课即将截止”通常是同一事项；明确说明“截止时间更正/延期”的也应合并并采用新时间。不同课程主题、不同场次、不同学期，或没有更正关系却明显日期不同的才是新事项。
+- 例如“名师讲堂开始选课”“名师讲堂选课提醒”“名师讲堂选课即将截止”通常是同一事项；明确说明“截止时间更正/延期”的也应合并并采用新时间。不同讲座主题、不同场次、不同学期，或没有更正关系却明显日期不同的才是新事项。
 - duplicate_task_id 只能使用候选中真实存在的 task_id；不确定是否同一事项时填 null。
 - JSON 中不要包含任何额外说明。"""
         user = (
@@ -189,7 +189,7 @@ class DeepSeekClient:
         ]
         system = """你是校务待办的保守去重审核器。找出列表中描述同一个现实事项的重复记录。
 
-同一活动、同一选课、同一作业或同一材料提交的多次提醒、催办、改写和补充说明应合并。比如同一学期“通识课程开始选课”“通识课程选课提醒”“通识课程选课即将截止”通常属于同一事项。
+同一活动、同一选课、同一作业或同一材料提交的多次提醒、催办、改写和补充说明应合并。比如同一学期“名师讲堂开始选课”“名师讲堂选课提醒”“名师讲堂选课即将截止”通常属于同一事项。
 
 以下情况绝不能合并：不同讲座主题、不同场次、不同课程/作业、不同学期、没有延期/更正关系却明显日期不同，或者只是标题泛称相似但没有证据证明是同一件事。明确写明原事项截止时间更正或延期的，仍属于同一事项。拿不准就不要合并。
 
@@ -214,6 +214,91 @@ class DeepSeekClient:
         user = (
             "用户问题：" + question[:1000] + "\n\n"
             "本地资料：\n" + json.dumps(context, ensure_ascii=False, default=str)[:50000]
+        )
+        return self._chat(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            json_output=False,
+            max_tokens=1800,
+        )
+
+    def plan_query(
+        self,
+        question: str,
+        history: list[dict[str, str]] | None = None,
+    ) -> dict[str, Any]:
+        """Resolve follow-ups and produce concrete terms for local retrieval."""
+        compact_history = [
+            {"role": item.get("role", "user"), "content": str(item.get("content") or "")[:1600]}
+            for item in (history or [])[-12:]
+            if item.get("role") in {"user", "assistant"}
+        ]
+        now = datetime.now().astimezone().isoformat(timespec="seconds")
+        system = f"""你是学校事务资料检索的查询改写器。当前中国标准时间是 {now}。
+结合最近对话，将用户的当前问题改写成脱离上下文也能理解的完整检索问题，并给出 2 到 8 个检索词。
+
+必须保留课程编号、文件名、群名、人名、日期、数字和“已完成/未完成”等限制。把“这个、那个、1和3、它”等指代补全；今天、本周、明天应换算成明确日期范围。不要回答问题，不要添加历史中没有的事实。
+
+只输出 JSON：
+{{"standalone_question":"完整问题","search_terms":["精确短语"],"time_scope":"明确日期范围或 null"}}"""
+        raw = self._chat(
+            [
+                {"role": "system", "content": system},
+                {
+                    "role": "user",
+                    "content": (
+                        "最近对话：\n" + json.dumps(compact_history, ensure_ascii=False)
+                        + "\n\n当前问题：" + question[:1200]
+                    ),
+                },
+            ],
+            json_output=True,
+            max_tokens=900,
+        )
+        data = json.loads(raw)
+        standalone = str(data.get("standalone_question") or question).strip()[:1600]
+        terms = []
+        for term in data.get("search_terms", []):
+            term = str(term).strip()
+            if term and term not in terms:
+                terms.append(term[:80])
+        return {
+            "standalone_question": standalone or question,
+            "search_terms": terms[:8],
+            "time_scope": str(data.get("time_scope") or "").strip()[:120] or None,
+        }
+
+    def answer_with_sources(
+        self,
+        question: str,
+        standalone_question: str,
+        history: list[dict[str, str]],
+        retrieval: dict[str, Any],
+    ) -> str:
+        """Answer from retrieved local evidence and retain visible source labels."""
+        now = datetime.now().astimezone().isoformat(timespec="seconds")
+        compact_history = [
+            {"role": item.get("role"), "content": str(item.get("content") or "")[:1600]}
+            for item in history[-12:]
+        ]
+        sources = retrieval.get("sources", [])
+        neighbors = retrieval.get("neighbor_messages", [])
+        system = f"""你是用户专用的学校事务助理。当前中国标准时间是 {now}。
+
+只能依据本次提供的本地检索资料回答，不能用常识补写通知内容。资料不足时明确说“本地资料中没有找到”，并说明需要用户下载或查看哪个附件/群聊；不得假装知道。区分待办、已完成事项和一般资料，已完成事项仍可用于回答历史内容。不要声称已经替用户提交、报名、回复或完成任何操作。
+
+回答要求：
+- 先直接回答问题，再补充必要的时间、地点、操作和注意事项。
+- 只回答用户实际询问的字段；不要因为资料里还出现了地点、报名或其他课程，就主动扩展无关信息。只有会改变用户当前行动的更正、截止或资料冲突才补充提醒。
+- 每个关键事实后引用资料编号，例如 [S1]；编号必须来自输入。
+- 如果资料互相矛盾，列出冲突和各自时间，优先指出更新较晚的通知，但不要自行裁定。
+- 如果附件状态为 missing/未下载，明确提醒用户在微信中手动下载；不要声称读取过附件正文。
+- 表达简洁，适合在企业微信中阅读，通常不超过 900 个汉字。"""
+        user = (
+            "【最近对话】\n" + json.dumps(compact_history, ensure_ascii=False)
+            + "\n\n【用户原问题】\n" + question[:1200]
+            + "\n\n【改写后的完整问题】\n" + standalone_question[:1600]
+            + "\n\n【检索资料】\n" + json.dumps(sources, ensure_ascii=False, default=str)
+            + "\n\n【命中消息附近的上下文】\n" + json.dumps(neighbors, ensure_ascii=False, default=str)[:10000]
         )
         return self._chat(
             [{"role": "system", "content": system}, {"role": "user", "content": user}],

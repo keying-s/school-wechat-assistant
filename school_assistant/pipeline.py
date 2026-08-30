@@ -8,7 +8,7 @@ import logging
 import threading
 import time
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Callable
 
 from . import config
 from .database import Store, now_iso
@@ -33,6 +33,7 @@ class Pipeline:
         self._ai_retry_after = 0.0
         self._dedup_retry_after = 0.0
         self._last_file_reconcile = 0.0
+        self.on_data_changed: Callable[[], None] | None = None
         self._state_lock = threading.Lock()
         self._state: dict[str, Any] = {
             "running": False,
@@ -296,10 +297,18 @@ class Pipeline:
                 self._prepare_reader()
                 self._refresh_groups(force=force)
                 new_messages = self._sync_messages(force=force)
-                self._reconcile_files()
-                self._extract_files()
+                reconciled_files = self._reconcile_files()
+                extracted_files = self._extract_files()
                 new_tasks = self._process_ai()
-                self._cleanup_existing_duplicates()
+                consolidated_tasks = self._cleanup_existing_duplicates()
+                if (
+                    self.on_data_changed
+                    and any((new_messages, reconciled_files, extracted_files, new_tasks, consolidated_tasks))
+                ):
+                    try:
+                        self.on_data_changed()
+                    except Exception:
+                        logger.exception("请求增量检索索引更新失败")
                 current_error = self.status().get("last_error") or ""
                 self._set_state(
                     wechat_ready=True,

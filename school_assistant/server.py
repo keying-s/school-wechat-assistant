@@ -17,16 +17,27 @@ from . import config
 from .database import Store
 from .deepseek_client import DeepSeekClient
 from .pipeline import Pipeline
+from .qa_service import SchoolQAService
+from .wecom_bot import SchoolWeComBot
 
 
 logger = logging.getLogger("school_assistant.http")
 
 
 class AppContext:
-    def __init__(self, store: Store, pipeline: Pipeline, ai: DeepSeekClient):
+    def __init__(
+        self,
+        store: Store,
+        pipeline: Pipeline,
+        ai: DeepSeekClient,
+        qa: SchoolQAService,
+        bot: SchoolWeComBot,
+    ):
         self.store = store
         self.pipeline = pipeline
         self.ai = ai
+        self.qa = qa
+        self.bot = bot
 
 
 def _manual_reminder(due_at: str | None, lead_minutes: int) -> str | None:
@@ -108,6 +119,8 @@ def make_handler(context: AppContext):
                             "configured": context.ai.configured(),
                             "model": context.ai.model,
                         },
+                        "retrieval": context.qa.retrieval.status(),
+                        "school_bot": context.bot.status(),
                     })
                 elif path == "/api/dashboard":
                     self._json({"ok": True, **context.store.dashboard(), "service": context.pipeline.status()})
@@ -171,8 +184,9 @@ def make_handler(context: AppContext):
                     if not question:
                         self._error(400, "question 不能为空")
                         return
-                    answer = context.ai.answer(question, context.store.qa_context())
-                    self._json({"ok": True, "answer": answer})
+                    user_id = str(body.get("user_id") or "web")[:180]
+                    result = context.qa.ask(user_id, question)
+                    self._json({"ok": True, **result})
                 elif path == "/api/internal/reminders/claim":
                     reminders = context.store.claim_due_notifications(int(body.get("limit", 10)))
                     self._json({"ok": True, "reminders": reminders})

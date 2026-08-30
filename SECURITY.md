@@ -9,7 +9,9 @@ and chat databases. Do not deploy it on another person's machine or account.
 ## Secrets
 
 - Put the DeepSeek key only in `config/.env.school`.
-- That file is ignored by Git. Never paste a real key into source, issues,
+- Put the dedicated Enterprise WeChat BotID and Secret only in
+  `config/.env.school.bot`.
+- Both files are ignored by Git. Never paste a real key into source, issues,
   screenshots, logs, or example files.
 - If a key was ever committed, revoke it at the provider immediately; deleting
   the latest commit is not sufficient because Git history retains it.
@@ -30,7 +32,9 @@ and must never be uploaded.
 
 Only groups explicitly selected in the local website are analyzed. Their
 selected messages and locally extracted attachment text are sent to the
-configured DeepSeek API. Nothing is sent to the project's authors.
+configured DeepSeek API only when task extraction or Q&A requires it. Dense
+embeddings are generated locally with ONNX and are not sent to an embedding
+service. Nothing is sent to the project's authors.
 
 ## Network exposure
 

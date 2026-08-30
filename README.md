@@ -1,199 +1,130 @@
-# 知序：本地微信学校事务助手
+# 知序 · 学校事务助理
 
-一个面向 Windows 微信 4.x 的本地只读学校事务整理工具。它读取你主动选择的微信群消息和已下载附件，用 DeepSeek 提取待办、截止日期和日程，并通过本地网站展示。
+在 Windows 本机只读微信 4.x 数据库，把选定群聊中的通知、附件和待办整理成日程，并通过一个**独立的企业微信智能机器人**回答学校事务问题。
 
-项目不会操作微信窗口、鼠标或键盘，不实现个人微信发消息，也不会通过机器人主动推送学校提醒。
+- 日程网站：`http://127.0.0.1:8765`
+- 企业微信入口：API 模式 / 长连接，无需公网回调地址
+- 学校机器人与“消息追踪”机器人使用不同 BotID/Secret，不再做跨项目问题路由
+- 学校事务不会通过机器人主动提醒；只有用户主动提问时才回复
 
-> [!WARNING]
-> 这是非官方工具。仅可用于你自己的设备、账号和获得授权的数据。微信升级可能改变本地数据库结构；使用前请备份重要数据并自行评估账号、隐私与合规风险。
+## 已实现的检索方式
 
-## 功能
+问答使用“短期对话记忆 + 混合 RAG”：
 
-- 只读扫描微信进程内存，密钥仅保留在当前进程内；
-- 使用 SQLCipher `mode=ro` 和 `query_only` 打开本地数据库；
-- 联合读取 `message_0.db`～`message_N.db`，避免遗漏分片群聊；
-- 网站内勾选关注群，未选择的群不会送入 AI 分析；
-- 每 5 秒检查本地数据库/WAL 变化，增量读取新消息；
-- DeepSeek API 提取行动事项、时间、优先级、附件要求和原消息证据；
-- AI 语义去重：重复提醒、催办和截止时间更正会合并，不同场次或学期保持独立；
-- 本地解析 PDF 文字层、DOCX、XLS/XLSX、PPTX、TXT、Markdown、CSV、JSON、XML 和 HTML；
-- 不执行宏、不启动 Office、不做 OCR；无法读取的必要附件会进入人工查看清单；
-- 本地月历、待办勾选、手动任务和可选浏览器通知；
-- 可选接入已有问答机器人，仅在用户主动提问时回答。
+1. 每位企业微信用户独立保存最近 8 轮问答，2 小时后自动结束会话上下文；
+2. DeepSeek 将“这个”“1和3什么时候”等追问改写成完整问题；
+3. 关键词检索优先匹配群名、文件名、课程名、编号和日期；
+4. `BAAI/bge-small-zh-v1.5` 通过 FastEmbed/ONNX 在本机生成 512 维向量，用于补充语义召回；
+5. 检索覆盖所选群聊的全部已入库消息、附件正文，以及未完成和已完成事项；
+6. 命中聊天消息时，会一并读取前后相邻消息；
+7. 回答中的关键事实使用 `[S1]`、`[S2]` 标注本地来源。
 
-## 隐私边界
+向量模型约 90MB，资料和向量都保存在本机，不调用云端 Embedding API。模型选择依据：[BGE 中文模型说明](https://huggingface.co/BAAI/bge-small-zh-v1.5)、[FastEmbed 支持模型](https://qdrant.github.io/fastembed/examples/Supported_Models/)。
 
-| 数据/行为 | 处理方式 |
-|---|---|
-| 微信窗口 | 不打开、不点击、不控制 |
-| 原始数据库 | 只读打开，不解密覆盖原文件 |
-| 数据库密钥 | 运行时内存中使用，不写入项目文件 |
-| 群消息 | 仅已勾选群进入本地缓存和 AI 分析 |
-| 附件 | 只读取微信已下载到本地的文件 |
-| DeepSeek | 发送已选群的必要消息/附件文本用于提取和问答 |
-| Web 服务 | 默认仅监听 `127.0.0.1:8765` |
-| 机器人 | 不主动发送学校提醒；只响应主动问题 |
+## 安全边界
 
-运行数据保存在 `data/`，日志保存在 `logs/`。两者均被 `.gitignore` 排除，但仍应在发布前自行检查。
+- 只读微信进程内存和本地数据库；
+- 不切换微信窗口，不操作鼠标或键盘；
+- 不实现个人微信自动发送；
+- 原微信数据库以 SQLCipher `mode=ro` 和 `query_only` 打开；
+- 只有网站中勾选的群聊会进入分析和检索；
+- DeepSeek Key 只保存在 `config/.env.school`；
+- 学校机器人凭据只保存在 `config/.env.school.bot`；
+- 两个真实配置文件均被 `.gitignore` 排除，README 和示例配置不含密钥；
+- 小于 50MB 的文件由微信自动下载；必要但未落盘或无法提取文字的附件会提醒手动查看；
+- 附件解析不会启动 Office、执行宏或进行 OCR。
 
-## 环境要求
+## 直接使用
 
-- Windows 10/11 x64；
-- Windows 微信（Weixin）4.x，且当前用户已经登录；
-- 64 位 Python 3.11；
-- DeepSeek API key；
-- 建议让微信自动下载需要处理的文件。
+正常情况下只需双击：
 
-## 快速开始
+- `启动学校日程.bat`：启动后台并打开日程网站；
+- `停止学校日程.bat`：停止网站、微信只读同步和学校机器人。
 
-```powershell
-git clone <your-repository-url>
-cd school-wechat-assistant
-Set-ExecutionPolicy -Scope Process Bypass
-.\setup.ps1
-```
+后台计划任务名称是 `SchoolAssistant`。同一个 `app.py` 会启动网站、微信只读同步、本地检索索引和学校机器人长连接，不需要再开第二个窗口。
 
-编辑 `config/.env.school`：
+可以向新的学校事务机器人提问：
 
-```dotenv
-DEEPSEEK_API_KEY=your-deepseek-api-key
-DEEPSEEK_MODEL=deepseek-v4-flash
-DEEPSEEK_BASE_URL=https://api.deepseek.com
-```
+- `今天和本周要做什么？`
+- `名师讲堂有哪些课程？`
+- 接着问：`1和3分别是什么时候？`
+- `哪些必要附件还没下载？`
+- `培养计划的选课要求是什么？`
+- `清除上下文`：只清除本人的近期问答，不删除群消息、附件或待办。
 
-启动服务：
+## 首次安装
 
 ```powershell
-.\.venv\Scripts\python.exe app.py
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+Copy-Item config\.env.school.example config\.env.school
+Copy-Item config\.env.school.bot.example config\.env.school.bot
 ```
 
-打开 <http://127.0.0.1:8765>，进入“关注群聊”，勾选需要分析的群。首次勾选默认回看最近 7 天，随后只做增量处理。
+然后填写：
 
-## 后台自启动
+- `config/.env.school`：学校项目专用 DeepSeek API Key；
+- `config/.env.school.bot`：新建学校机器人得到的 BotID 和 Secret。
+
+注册或更新开机计划任务：
 
 ```powershell
 .\register_school_task.ps1
 Start-ScheduledTask SchoolAssistant
 ```
 
-也可以双击 `启动学校日程.bat`。移除自启动：
+模型首次使用时会下载到 `data/models/`；完成后会一直复用本地缓存。
 
-```powershell
-.\unregister_school_task.ps1
-```
+## 数据更新机制
 
-## 配置
+- 已关注群聊默认每 5 秒只读检查一次本地微信数据库；
+- 新消息和已下载附件先进入 `data/school_assistant.sqlite3`；
+- 每次提问前最多间隔 15 秒检查一次检索语料；
+- 只有新增或变化的资料块会重新生成向量，不会重复索引全部资料；
+- 新消息被检测后，下一次提问即可检索到；
+- 已完成事项仍然可查，但不会重新显示为未完成待办。
 
-所有配置均位于不会提交的 `config/.env.school`：
-
-| 变量 | 默认值 | 说明 |
-|---|---:|---|
-| `DEEPSEEK_API_KEY` | 空 | 必填，禁止提交 |
-| `DEEPSEEK_MODEL` | `deepseek-v4-flash` | 事项提取、去重与问答模型 |
-| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | OpenAI 兼容 API 根地址 |
-| `SCHOOL_HOST` | `127.0.0.1` | 本地网站监听地址 |
-| `SCHOOL_PORT` | `8765` | 本地网站端口 |
-| `WECHAT_POLL_SECONDS` | `5` | 消息变化检查间隔 |
-| `GROUP_REFRESH_SECONDS` | `60` | 群列表刷新间隔 |
-| `DEFAULT_LOOKBACK_DAYS` | `7` | 首次关注回看天数 |
-| `MAX_INITIAL_MESSAGES` | `800` | 单群每批最大读取条数 |
-| `WECHAT_DATA_ROOT` | 自动发现 | 自定义 `xwechat_files` 根目录 |
-| `WCDB_TOOL_PATH` | 内置 vendor 路径 | 自定义密钥读取模块 |
-
-## AI 语义去重
-
-新消息提取时，模型会同时看到最近事项候选，并返回 `duplicate_task_id`：
-
-- 同一活动的再次提醒、催办、措辞变化或补充说明会合并；
-- 明确的截止时间延期/更正会更新原事项；
-- 不同主题、场次、课程、学期或无更正关系的不同日期不会合并；
-- 所有原消息证据都会保留在主事项中；
-- 存量重复行标记为 `merged` 并指向主事项，不物理删除。
-
-候选集合未变化时不会重复调用存量去重 API。
-
-## 附件处理
-
-支持：
-
-- PDF：只提取已有文字层；
-- Word：`.docx`；
-- Excel：`.xls`、`.xlsx`、`.xlsm`（只读取计算结果，不运行宏）；
-- PowerPoint：`.pptx`；
-- 文本：`.txt`、`.md`、`.csv`、`.tsv`、`.json`、`.xml`、`.html` 等。
-
-扫描版 PDF、旧 `.doc/.ppt`、加密文件和不支持的格式不会做 OCR 或 Office 自动化。若 AI 判断该附件是完成事项所必需的，网站会提示手动查看。
-
-## 数据重置
-
-完整重置会丢失网站内的群选择和完成状态。先停止服务并备份数据库：
-
-```powershell
-Stop-ScheduledTask SchoolAssistant -ErrorAction SilentlyContinue
-Copy-Item data\school_assistant.sqlite3 data\school_assistant.backup.sqlite3
-Remove-Item data\school_assistant.sqlite3
-Start-ScheduledTask SchoolAssistant
-```
-
-不要删除微信自己的 `xwechat_files`。
-
-## 可选：接入已有机器人
-
-本部分代码用于接入企业微信机器人，目的是通过询问机器人，获得回答。没有企业微信管理员权限的不能使用。
-
-也可以自行接入别的机器人。
-
-`integrations/message-tracker/` 提供一个适配示例：
-
-- 用户没有写明确前缀时，先由机器人项目自己的 DeepSeek 判断 `SCHOOL` 或 `TRACKER`；
-- 学校问题再请求本地 `/api/qa`，因此两个项目的 API key 保持分离；
-- `学校 ...` 与 `信息追踪 ...` 可以显式覆盖 AI 路由；
-- 示例不包含主动提醒线程，也不调用发送接口。
-
-详见 [集成说明](integrations/message-tracker/README.md)。
-
-## 测试
+## 本地开发和验证
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe app.py
 ```
 
-测试覆盖数据库去重、存量合并、附件提取、读取辅助函数和 AI 结构化输出适配。测试使用临时文件和 Mock，不读取微信、不调用 DeepSeek、不发送消息。
+状态接口：`http://127.0.0.1:8765/api/status`
 
-准备公开仓库前，请再按 [GitHub 发布清单](PUBLISHING.md) 检查一次暂存内容。
+它会显示：
+
+- 微信只读同步状态；
+- DeepSeek 是否已配置；
+- 本地模型、资料块和待生成向量数量；
+- 新学校机器人是否已连接。
+
+日志位于 `logs/school_assistant.log`。日志不会记录 Bot Secret 或 DeepSeek Key，也不会完整记录用户问题正文。
 
 ## 常见问题
 
-### 为什么某个群找不到？
+### 机器人第一次回答较慢
 
-微信会把群表分散在多个 `message_N.db`。本项目会扫描所有已验证的消息分片，并将联系人库与实际消息表做并集。若群仍未出现，请确认该群在当前电脑上至少接收过一条消息，然后等待群列表刷新。
+首次安装需要下载约 90MB 的本地模型并生成初始向量。以后只有新增资料需要计算，速度会明显加快。
 
-### 为什么文件只有文件名？
+### 找到了文件名，但没有附件内容
 
-微信尚未把文件下载到本地，或格式不支持。项目不会点击微信中的下载按钮，也不会做 OCR。
+查看回答或网站里的附件状态：
 
-### 为什么第一次启动需要几秒？
+- `missing`：文件还没有被微信下载，请在微信中手动点击下载；
+- `unsupported` / `empty`：旧版 Office 文件、扫描版 PDF 或没有文字层，需要手动查看；
+- `available` / `extracted`：附件正文已进入本地检索。
 
-项目需要只读扫描当前微信进程、验证各数据库密钥，并加载群列表。后续新消息通过数据库/WAL 签名增量检测。
+### 追问仍然指代错误
 
-### 能否用于训练模型？
+每位用户的上下文独立，并在 2 小时后过期。换话题前可以发送 `清除上下文`，再明确说出文件或活动名称。
 
-项目只做检索、结构化提取和问答，不包含模型训练流程。
+### 企业微信机器人没有回复
 
-## 项目结构
+依次检查：
 
-```text
-school_assistant/       后端、数据库、微信读取、DeepSeek 客户端
-static/                 本地网站
-tests/                  无真实账号依赖的测试
-vendor/wcdb-key-tool/   MIT 许可的 Windows WCDB 密钥读取模块
-integrations/           可选机器人适配示例
-config/                 配置模板；真实 key 文件不会提交
-app.py                  统一入口
-```
-
-## 第三方与许可
-
-本项目使用 MIT License。vendored `wcdb-key-tool` 保留其原始 MIT 许可证，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
-
-发布前请阅读 [SECURITY.md](SECURITY.md)，确认没有提交 key、聊天数据库、附件文本、日志或备份。
+1. `SchoolAssistant` 计划任务是否为 Running；
+2. `/api/status` 中 `school_bot.configured` 和 `school_bot.connected` 是否为 `true`；
+3. BotID/Secret 是否属于新的学校机器人，且没有被另一个进程重复连接；
+4. 查看 `logs/school_assistant.log` 最后的重连错误。

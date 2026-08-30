@@ -146,6 +146,39 @@ class Store:
                     value TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS qa_turns (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK(role IN ('user','assistant')),
+                    content TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_qa_turns_user_time
+                    ON qa_turns(user_id,created_at,id);
+
+                CREATE TABLE IF NOT EXISTS rag_chunks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_key TEXT NOT NULL UNIQUE,
+                    source_kind TEXT NOT NULL,
+                    source_id TEXT NOT NULL,
+                    chunk_index INTEGER NOT NULL,
+                    group_id TEXT,
+                    group_name TEXT,
+                    title TEXT NOT NULL DEFAULT '',
+                    content TEXT NOT NULL,
+                    create_time INTEGER,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    content_hash TEXT NOT NULL,
+                    embedding_model TEXT,
+                    embedding_dim INTEGER,
+                    embedding BLOB,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_rag_chunks_source
+                    ON rag_chunks(source_kind,source_id,chunk_index);
+                CREATE INDEX IF NOT EXISTS idx_rag_chunks_time
+                    ON rag_chunks(create_time);
                 """
             )
             message_columns = {
@@ -739,6 +772,110 @@ class Store:
                 """
             ).fetchall()
         return {"tasks": self.list_tasks("open")[:80], "recent_messages": [dict(r) for r in recent]}
+
+    def qa_history(
+        self,
+        user_id: str,
+        *,
+        limit: int = config.QA_HISTORY_TURNS * 2,
+        ttl_hours: int = config.QA_SESSION_TTL_HOURS,
+    ) -> list[dict[str, str]]:
+        """Return one user's recent private Q&A context within the session TTL."""
+        cutoff = (datetime.now().astimezone() - timedelta(hours=ttl_hours)).isoformat(
+            timespec="seconds"
+        )
+        with self.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT role,content FROM qa_turns
+                WHERE user_id=? AND created_at>=?
+                ORDER BY id DESC LIMIT ?
+                """,
+                (str(user_id)[:180], cutoff, max(2, int(limit))),
+            ).fetchall()
+        return [dict(row) for row in reversed(rows)]
+
+    def append_qa_exchange(self, user_id: str, question: str, answer: str) -> None:
+        stamp = now_iso()
+        safe_user_id = str(user_id or "anonymous")[:180]
+        with self.transaction() as conn:
+            conn.executemany(
+                "INSERT INTO qa_turns(user_id,role,content,created_at) VALUES(?,?,?,?)",
+                [
+                    (safe_user_id, "user", str(question)[:4000], stamp),
+                    (safe_user_id, "assistant", str(answer)[:12000], stamp),
+                ],
+            )
+            cutoff = (datetime.now().astimezone() - timedelta(days=30)).isoformat(
+                timespec="seconds"
+            )
+            conn.execute("DELETE FROM qa_turns WHERE created_at<?", (cutoff,))
+
+    def clear_qa_history(self, user_id: str) -> None:
+        with self.transaction() as conn:
+            conn.execute("DELETE FROM qa_turns WHERE user_id=?", (str(user_id)[:180],))
+
+    def retrieval_source_rows(self) -> dict[str, list[dict[str, Any]]]:
+        """Read the complete selected corpus; completed tasks remain searchable."""
+        with self.connection() as conn:
+            messages = conn.execute(
+                """
+                SELECT m.*,g.name AS group_name
+                FROM messages m JOIN groups g ON g.id=m.group_id
+                WHERE g.selected=1
+                ORDER BY m.create_time,m.local_id
+                """
+            ).fetchall()
+            tasks = conn.execute(
+                """
+                SELECT t.*,
+                       (SELECT COUNT(*) FROM task_messages tm WHERE tm.task_id=t.id) AS evidence_count
+                FROM tasks t WHERE t.status<>'merged'
+                ORDER BY t.updated_at DESC
+                """
+            ).fetchall()
+        return {
+            "messages": [dict(row) for row in messages],
+            "tasks": [dict(row) for row in tasks],
+        }
+
+    def message_neighbors(self, message_id: int, radius: int = 2) -> list[dict[str, Any]]:
+        """Return nearby messages from the same group to retain notice context."""
+        radius = max(0, min(5, int(radius)))
+        with self.connection() as conn:
+            target = conn.execute(
+                "SELECT group_id,create_time,local_id FROM messages WHERE id=?",
+                (int(message_id),),
+            ).fetchone()
+            if not target:
+                return []
+            before = conn.execute(
+                """
+                SELECT m.id,g.name AS group_name,m.sender_name,m.create_time,m.message_type,
+                       m.content,m.file_name,m.download_state,m.file_extract_state
+                FROM messages m JOIN groups g ON g.id=m.group_id
+                WHERE m.group_id=? AND (m.create_time<? OR (m.create_time=? AND m.local_id<?))
+                ORDER BY m.create_time DESC,m.local_id DESC LIMIT ?
+                """,
+                (
+                    target["group_id"], target["create_time"], target["create_time"],
+                    target["local_id"], radius,
+                ),
+            ).fetchall()
+            after = conn.execute(
+                """
+                SELECT m.id,g.name AS group_name,m.sender_name,m.create_time,m.message_type,
+                       m.content,m.file_name,m.download_state,m.file_extract_state
+                FROM messages m JOIN groups g ON g.id=m.group_id
+                WHERE m.group_id=? AND (m.create_time>? OR (m.create_time=? AND m.local_id>?))
+                ORDER BY m.create_time,m.local_id LIMIT ?
+                """,
+                (
+                    target["group_id"], target["create_time"], target["create_time"],
+                    target["local_id"], radius,
+                ),
+            ).fetchall()
+        return [dict(row) for row in reversed(before)] + [dict(row) for row in after]
 
     def claim_due_notifications(self, limit: int = 10) -> list[dict[str, Any]]:
         stamp = now_iso()

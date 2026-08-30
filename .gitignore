@@ -4,6 +4,7 @@ config/.env.school
 .env.*
 !.env.example
 !config/.env.school.example
+!config/.env.school.bot.example
 
 # Runtime data: may contain private chat content
 data/

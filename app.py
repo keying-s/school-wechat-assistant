@@ -11,7 +11,10 @@ from school_assistant import config
 from school_assistant.database import Store
 from school_assistant.deepseek_client import DeepSeekClient
 from school_assistant.pipeline import Pipeline
+from school_assistant.qa_service import SchoolQAService
+from school_assistant.retrieval import RetrievalIndex
 from school_assistant.server import AppContext, create_server
+from school_assistant.wecom_bot import SchoolWeComBot
 
 
 def configure_logging() -> None:
@@ -32,7 +35,11 @@ def main() -> None:
     store = Store()
     ai = DeepSeekClient()
     pipeline = Pipeline(store, ai=ai)
-    context = AppContext(store, pipeline, ai)
+    retrieval = RetrievalIndex(store)
+    qa = SchoolQAService(store, ai, retrieval)
+    pipeline.on_data_changed = qa.request_index_refresh
+    bot = SchoolWeComBot(qa)
+    context = AppContext(store, pipeline, ai, qa, bot)
     server = create_server(context)
 
     def shutdown(*_args):
@@ -44,6 +51,8 @@ def main() -> None:
         signal.signal(signal.SIGTERM, shutdown)
 
     pipeline.start()
+    qa.warmup_async()
+    bot.start()
     logging.getLogger("school_assistant").info(
         "学校事务服务启动：http://%s:%s", config.HOST, config.PORT
     )
