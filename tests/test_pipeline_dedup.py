@@ -43,6 +43,72 @@ class _CleanupAI:
 
 
 class PipelineDedupTests(unittest.TestCase):
+    def test_conflicting_duplicate_claims_keep_only_best_title_match(self):
+        extracted = [
+            {
+                "title": "参加新生专题报告2",
+                "due_at": "2026-08-31T10:30:00+08:00",
+                "duplicate_task_id": 12,
+                "related_message_ids": [284],
+            },
+            {
+                "title": "参加安全通识培训",
+                "due_at": "2026-08-31T17:20:00+08:00",
+                "duplicate_task_id": 12,
+                "related_message_ids": [284],
+            },
+        ]
+        candidates = [{
+            "task_id": 12,
+            "title": "参加新生安全通识培训",
+            "due_at": "2026-08-31T17:20:00+08:00",
+        }]
+        messages = [{
+            "id": 284,
+            "content": "明日安排：上午新生专题报告2；下午安全通识培训。",
+        }]
+
+        result = Pipeline._validate_duplicate_assignments(extracted, candidates, messages)
+
+        self.assertIsNone(result[0]["duplicate_task_id"])
+        self.assertEqual(result[1]["duplicate_task_id"], 12)
+
+    def test_different_day_is_not_merged_without_correction_notice(self):
+        extracted = [{
+            "title": "参加新生专题报告2",
+            "due_at": "2026-08-31T09:00:00+08:00",
+            "duplicate_task_id": 11,
+            "related_message_ids": [284],
+        }]
+        candidates = [{
+            "task_id": 11,
+            "title": "参加新生专题报告",
+            "due_at": "2026-09-04T08:30:00+08:00",
+        }]
+        messages = [{"id": 284, "content": "明日9:00参加新生专题报告2。"}]
+
+        result = Pipeline._validate_duplicate_assignments(extracted, candidates, messages)
+
+        self.assertIsNone(result[0]["duplicate_task_id"])
+
+    def test_explicit_reschedule_can_merge_across_dates(self):
+        extracted = [{
+            "title": "参加新生专题报告3",
+            "due_at": "2026-09-04T08:30:00+08:00",
+            "duplicate_task_id": 11,
+            "related_message_ids": [300],
+        }]
+        candidates = [{
+            "task_id": 11,
+            "title": "参加新生专题报告3",
+            "due_at": "2026-09-01T08:30:00+08:00",
+        }]
+        messages = [{"id": 300, "content": "原定9月1日的报告3调整为9月4日。"}]
+
+        result = Pipeline._validate_duplicate_assignments(extracted, candidates, messages)
+
+        self.assertEqual(result[0]["duplicate_task_id"], 11)
+
     def test_model_duplicate_id_uses_merge_path(self):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(Path(directory) / "test.sqlite3")

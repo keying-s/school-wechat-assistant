@@ -5,9 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import threading
 import time
 from datetime import datetime, timedelta
+from difflib import SequenceMatcher
 from typing import Any, Callable
 
 from . import config
@@ -154,6 +156,93 @@ class Pipeline:
         except (ValueError, TypeError):
             return None, None, all_day
 
+    @staticmethod
+    def _title_similarity(left: Any, right: Any) -> float:
+        """Score titles after removing generic action prefixes."""
+        prefixes = (
+            "参加", "完成", "进行", "办理", "提交", "填写", "报名", "查看",
+            "阅读", "下载", "新生", "再次", "提醒",
+        )
+
+        def normalize(value: Any) -> str:
+            text = re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", str(value or "").casefold())
+            changed = True
+            while changed and text:
+                changed = False
+                for prefix in prefixes:
+                    if text.startswith(prefix):
+                        text = text[len(prefix):]
+                        changed = True
+                        break
+            return text
+
+        first, second = normalize(left), normalize(right)
+        if not first or not second:
+            return 0.0
+        return SequenceMatcher(None, first, second).ratio()
+
+    @classmethod
+    def _validate_duplicate_assignments(
+        cls,
+        extracted: list[dict[str, Any]],
+        candidates: list[dict[str, Any]],
+        messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Reject model merge choices that conflict with basic event identity."""
+        by_id = {int(task["task_id"]): task for task in candidates}
+        message_by_id = {int(message["id"]): message for message in messages}
+        correction_words = ("调整", "改为", "更正", "延期", "提前", "顺延", "变更", "更新为", "原定")
+        accepted: dict[int, list[tuple[int, float]]] = {}
+
+        for index, task in enumerate(extracted):
+            try:
+                duplicate_id = int(task.get("duplicate_task_id"))
+            except (TypeError, ValueError):
+                task["duplicate_task_id"] = None
+                continue
+            candidate = by_id.get(duplicate_id)
+            if not candidate:
+                task["duplicate_task_id"] = None
+                continue
+
+            related_ids = {
+                int(value) for value in task.get("related_message_ids", [])
+                if str(value).isdigit()
+            }
+            evidence = "\n".join(
+                str(message_by_id[value].get("content") or "")
+                for value in related_ids if value in message_by_id
+            )
+            is_correction = any(word in evidence for word in correction_words)
+            similarity = cls._title_similarity(task.get("title"), candidate.get("title"))
+            new_numbers = re.findall(r"\d+", str(task.get("title") or ""))
+            old_numbers = re.findall(r"\d+", str(candidate.get("title") or ""))
+            new_day = str(task.get("due_at") or "")[:10]
+            old_day = str(candidate.get("due_at") or "")[:10]
+
+            unsafe = similarity < 0.42
+            unsafe = unsafe or bool(new_numbers and old_numbers and new_numbers != old_numbers and not is_correction)
+            unsafe = unsafe or bool(new_day and old_day and new_day != old_day and not is_correction)
+            if unsafe:
+                logger.warning(
+                    "忽略有冲突的 AI 去重：new=%r candidate=%r similarity=%.2f",
+                    task.get("title"), candidate.get("title"), similarity,
+                )
+                task["duplicate_task_id"] = None
+                continue
+            accepted.setdefault(duplicate_id, []).append((index, similarity))
+
+        # One existing task cannot represent two independently extracted activities.
+        for duplicate_id, claims in accepted.items():
+            if len(claims) < 2:
+                continue
+            keep_index = max(claims, key=lambda item: item[1])[0]
+            for index, _score in claims:
+                if index != keep_index:
+                    extracted[index]["duplicate_task_id"] = None
+            logger.warning("多个新事项指向同一任务 %s，仅保留标题最匹配的一项", duplicate_id)
+        return extracted
+
     def _process_ai(self) -> int:
         if not self.ai.configured() or time.monotonic() < self._ai_retry_after:
             return 0
@@ -167,6 +256,7 @@ class Pipeline:
             candidates = self.store.dedup_candidates(group_id)
             candidate_ids = {int(task["task_id"]) for task in candidates}
             extracted = self.ai.extract_tasks(batch, candidates)
+            extracted = self._validate_duplicate_assignments(extracted, candidates, batch)
             valid_ids = {int(message["id"]): message for message in batch}
             created = 0
             merged = 0
