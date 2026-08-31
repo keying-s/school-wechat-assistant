@@ -81,6 +81,54 @@ class RetrievalTests(unittest.TestCase):
         self.assertTrue(any(item["kind"] == "task" for item in result["sources"]))
         self.assertTrue(any("8月31日14:00" in item["content"] for item in result["sources"]))
 
+    def test_exact_date_tasks_are_pinned_ahead_of_older_plan_attachments(self):
+        message_id = self.store.insert_messages("g@chatroom", [{
+            "local_id": 2,
+            "create_time": 1_787_900_000,
+            "message_type": "file",
+            "content": "旧版活动方案",
+            "file_name": "旧版活动方案.docx",
+            "local_path": "C:/downloaded/old.docx",
+            "download_state": "available",
+        }])[0]
+        self.store.finish_file_extraction(
+            message_id,
+            "extracted",
+            "2026年8月31日安排：上午报告地点为旧会场，下午未列出活动。",
+        )
+        morning_id = self.store.upsert_task({
+            "title": "参加上午专题报告",
+            "description": "8月31日9:00在新会场参加专题报告。",
+            "action_text": "9:00前到新会场签到",
+            "due_at": "2026-08-31T09:00:00+08:00",
+            "source_group_id": "g@chatroom",
+            "source_group_name": "新生群",
+        })
+        afternoon_id = self.store.upsert_task({
+            "title": "参加下午安全培训",
+            "description": "8月31日16:00线上参加，必须完成。",
+            "action_text": "16:00上线参加培训",
+            "due_at": "2026-08-31T16:00:00+08:00",
+            "source_group_id": "g@chatroom",
+            "source_group_name": "新生群",
+        })
+
+        result = _TestIndex(self.store).search(
+            "2026年8月31日有什么安排",
+            search_terms=["8月31日", "安排"],
+            time_scope="2026-08-31",
+            top_k=2,
+        )
+
+        self.assertEqual(
+            [item["source_id"] for item in result["sources"][:2]],
+            [str(morning_id), str(afternoon_id)],
+        )
+        self.assertTrue(all(item["kind"] == "task" for item in result["sources"][:2]))
+        self.assertTrue(all(item["metadata"]["time_scope_match"] for item in result["sources"][:2]))
+        self.assertIn("新会场", result["sources"][0]["content"])
+        self.assertIn("线上参加", result["sources"][1]["content"])
+
     def test_history_is_isolated_by_user_and_can_be_cleared(self):
         self.store.append_qa_exchange("user-a", "名师讲堂？", "有十门课。")
         self.store.append_qa_exchange("user-b", "培养计划？", "请查看附件。")

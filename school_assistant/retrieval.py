@@ -11,7 +11,7 @@ import re
 import threading
 import time
 from collections import Counter
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Iterable
 
 import numpy as np
@@ -222,7 +222,8 @@ class RetrievalIndex:
                 f"事项：{title}",
                 f"状态：{_clean_text(task.get('status')) or '未知'}",
                 f"来源群：{group}" if group else "",
-                f"截止时间：{_clean_text(task.get('due_at'))}" if task.get("due_at") else "截止时间：未明确",
+                f"安排或截止时间：{_clean_text(task.get('due_at'))}" if task.get("due_at") else "安排或截止时间：未明确",
+                f"资料更新时间：{_clean_text(task.get('updated_at'))}" if task.get("updated_at") else "",
                 f"说明：{_clean_text(task.get('description'))}" if task.get("description") else "",
                 f"需要执行：{_clean_text(task.get('action_text'))}" if task.get("action_text") else "",
                 f"附件状态：{_clean_text(task.get('attachment_state'))}" if task.get("requires_attachment") else "",
@@ -240,6 +241,7 @@ class RetrievalIndex:
                     "task_id": task["id"],
                     "status": task.get("status"),
                     "due_at": task.get("due_at"),
+                    "updated_at": task.get("updated_at"),
                     "requires_attachment": bool(task.get("requires_attachment")),
                     "attachment_state": task.get("attachment_state"),
                 },
@@ -403,11 +405,28 @@ class RetrievalIndex:
             logger.warning("查询向量生成失败，使用关键词检索：%s", exc)
             return None
 
+    @staticmethod
+    def _scope_dates(time_scope: str | None) -> set[str]:
+        """Expand an ISO date or a short ISO date range returned by the query planner."""
+        raw_dates = re.findall(r"\d{4}-\d{2}-\d{2}", str(time_scope or ""))
+        if not raw_dates:
+            return set()
+        try:
+            start = date.fromisoformat(raw_dates[0])
+            end = date.fromisoformat(raw_dates[-1])
+        except ValueError:
+            return set()
+        days = (end - start).days
+        if len(raw_dates) == 1 or days < 0 or days > 90:
+            return {start.isoformat()}
+        return {(start + timedelta(days=offset)).isoformat() for offset in range(days + 1)}
+
     def search(
         self,
         question: str,
         *,
         search_terms: Iterable[str] = (),
+        time_scope: str | None = None,
         top_k: int = config.RAG_TOP_K,
     ) -> dict[str, Any]:
         self.sync()
@@ -421,6 +440,28 @@ class RetrievalIndex:
             ).fetchall()]
 
         terms = self._terms(question, search_terms)
+        scope_dates = self._scope_dates(time_scope)
+        pinned_tasks: list[dict[str, Any]] = []
+        if scope_dates:
+            for row in rows:
+                if row.get("source_kind") != "task":
+                    continue
+                try:
+                    metadata = json.loads(row.get("metadata_json") or "{}")
+                except json.JSONDecodeError:
+                    metadata = {}
+                if str(metadata.get("due_at") or "")[:10] in scope_dates:
+                    row["_time_scope_match"] = True
+                    row["_task_status"] = str(metadata.get("status") or "")
+                    row["_due_at"] = str(metadata.get("due_at") or "")
+                    pinned_tasks.append(row)
+            pinned_tasks.sort(
+                key=lambda item: (
+                    0 if item.get("_task_status") == "open" else 1,
+                    item.get("_due_at") or "9999",
+                )
+            )
+
         query_vector = self._query_vector(question) if rows else None
         scored: list[dict[str, Any]] = []
         for row in rows:
@@ -442,6 +483,14 @@ class RetrievalIndex:
         selected: list[dict[str, Any]] = []
         per_source: Counter[tuple[str, str]] = Counter()
         seen_attachment_chunks: set[str] = set()
+        for row in pinned_tasks[:30]:
+            source = (row["source_kind"], row["source_id"])
+            if per_source[source]:
+                continue
+            selected.append(row)
+            per_source[source] += 1
+
+        target_count = max(max(1, int(top_k)), len(selected))
         for row in scored:
             source = (row["source_kind"], row["source_id"])
             max_per_source = 4 if row["source_kind"] == "attachment" else 1
@@ -461,7 +510,7 @@ class RetrievalIndex:
             per_source[source] += 1
             if row["source_kind"] == "attachment" and dedup_key:
                 seen_attachment_chunks.add(dedup_key)
-            if len(selected) >= max(1, int(top_k)):
+            if len(selected) >= target_count:
                 break
 
         sources: list[dict[str, Any]] = []
@@ -471,6 +520,8 @@ class RetrievalIndex:
                 metadata = json.loads(row.get("metadata_json") or "{}")
             except json.JSONDecodeError:
                 metadata = {}
+            if row.get("_time_scope_match"):
+                metadata = {**metadata, "time_scope_match": True}
             content = row["content"]
             if context_chars + len(content) > 28000:
                 content = content[: max(0, 28000 - context_chars)]

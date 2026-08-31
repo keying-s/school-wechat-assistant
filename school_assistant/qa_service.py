@@ -100,7 +100,11 @@ class SchoolQAService:
             search_terms = [str(term) for term in plan.get("search_terms", []) if str(term).strip()]
             if plan.get("time_scope"):
                 search_terms.append(str(plan["time_scope"]))
-            retrieval = self.retrieval.search(standalone, search_terms=search_terms)
+            retrieval = self.retrieval.search(
+                standalone,
+                search_terms=search_terms,
+                time_scope=plan.get("time_scope"),
+            )
             answer = self.ai.answer_with_sources(
                 question,
                 standalone,

@@ -26,7 +26,11 @@ class _FakeAI:
 
 
 class _FakeRetrieval:
-    def search(self, question, *, search_terms=(), top_k=14):
+    def __init__(self):
+        self.last_time_scope = None
+
+    def search(self, question, *, search_terms=(), time_scope=None, top_k=14):
+        self.last_time_scope = time_scope
         return {
             "sources": [{
                 "ref": "S1",
@@ -52,6 +56,23 @@ class QAServiceTests(unittest.TestCase):
             self.assertEqual(len(ai.histories[1]), 2)
             self.assertIn("有哪些课程", ai.histories[1][0]["content"])
             self.assertIn("名师讲堂", result["standalone_question"])
+
+    def test_time_scope_is_forwarded_to_retrieval(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "qa.sqlite3")
+            ai = _FakeAI()
+            retrieval = _FakeRetrieval()
+            original = ai.plan_query
+
+            def dated_plan(question, history):
+                plan = original(question, history)
+                plan["time_scope"] = "2026-08-31"
+                return plan
+
+            ai.plan_query = dated_plan
+            qa = SchoolQAService(store, ai, retrieval)
+            qa.ask("student", "今天有什么安排？")
+            self.assertEqual(retrieval.last_time_scope, "2026-08-31")
 
     def test_reset_clears_only_conversation(self):
         with tempfile.TemporaryDirectory() as directory:
