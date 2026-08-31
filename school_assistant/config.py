@@ -72,8 +72,8 @@ RAG_CHUNK_CHARS = max(300, min(1500, int(get("RAG_CHUNK_CHARS", "800"))))
 RAG_CHUNK_OVERLAP = max(50, min(300, int(get("RAG_CHUNK_OVERLAP", "120"))))
 RAG_TOP_K = max(5, min(30, int(get("RAG_TOP_K", "10"))))
 RAG_SYNC_SECONDS = max(5, int(get("RAG_SYNC_SECONDS", "15")))
-QA_HISTORY_TURNS = max(2, min(20, int(get("QA_HISTORY_TURNS", "8"))))
-QA_SESSION_TTL_HOURS = max(1, min(72, int(get("QA_SESSION_TTL_HOURS", "2"))))
+QA_HISTORY_TURNS = max(2, min(20, int(get("QA_HISTORY_TURNS", "20"))))
+QA_SESSION_TTL_HOURS = max(1, min(720, int(get("QA_SESSION_TTL_HOURS", "720"))))
 
 WECHAT_DATA_ROOT = get("WECHAT_DATA_ROOT")
 WCDB_TOOL_PATH = Path(get(

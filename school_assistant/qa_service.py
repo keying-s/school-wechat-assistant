@@ -69,6 +69,52 @@ class SchoolQAService:
                 terms.append(token[:80])
         return terms[:8]
 
+    @staticmethod
+    def _personal_schedule_context(history: list[dict[str, str]]) -> tuple[str, list[str]]:
+        """Recover explicit user-selected activities for broad date queries."""
+        commitments: list[str] = []
+        terms: list[str] = []
+        commitment_re = re.compile(
+            r"(?:我|本人).{0,16}(?:选了|选的是|已选|报名了|已报名|报了名|预约了|要参加|会参加|要去)"
+        )
+        for turn in history:
+            if turn.get("role") != "user":
+                continue
+            content = str(turn.get("content") or "").strip()
+            commitment_match = commitment_re.search(content)
+            if not content or not commitment_match:
+                continue
+            if content not in commitments:
+                commitments.append(content[:300])
+            segments = [
+                segment.strip()
+                for segment in re.split(r"[，。！？、：；,.!?;:\s]+", content)
+                if segment.strip()
+            ]
+            for index, segment in enumerate(segments):
+                if not commitment_re.search(segment):
+                    continue
+                for prior in segments[max(0, index - 2):index]:
+                    subject = re.sub(r"^(?:你好|您好|请问|那个|关于)+", "", prior)
+                    subject = re.sub(
+                        r"(?:什么时候|什么时间|几点|在哪里|在哪儿|在哪|怎么参加|如何参加)$",
+                        "",
+                        subject,
+                    ).strip()
+                    if 2 <= len(subject) <= 40 and subject not in terms:
+                        terms.append(subject)
+                for number in re.findall(r"(?<!\d)\d{1,3}(?!\d)", segment):
+                    for value in (f"课程{number}", f"场次{number}"):
+                        if value not in terms:
+                            terms.append(value)
+            # Users often type selected numbers with spaces, creating separate segments.
+            selection_window = content[commitment_match.start():commitment_match.end() + 40]
+            for number in re.findall(r"(?<!\d)\d{1,3}(?!\d)", selection_window):
+                for value in (f"课程{number}", f"场次{number}"):
+                    if value not in terms:
+                        terms.append(value)
+        return "；".join(commitments[-4:]), terms[:10]
+
     def ask(self, user_id: str, question: str) -> dict[str, Any]:
         safe_user_id = str(user_id or "anonymous")[:180]
         question = str(question or "").strip()
@@ -98,6 +144,13 @@ class SchoolQAService:
 
             standalone = str(plan.get("standalone_question") or question).strip()
             search_terms = [str(term) for term in plan.get("search_terms", []) if str(term).strip()]
+            if plan.get("time_scope"):
+                personal_context, personal_terms = self._personal_schedule_context(history)
+                if personal_context:
+                    standalone += "\n用户此前明确的个人安排：" + personal_context
+                for term in personal_terms:
+                    if term not in search_terms:
+                        search_terms.append(term)
             if plan.get("time_scope"):
                 search_terms.append(str(plan["time_scope"]))
             retrieval = self.retrieval.search(

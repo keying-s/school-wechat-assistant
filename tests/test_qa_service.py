@@ -28,9 +28,13 @@ class _FakeAI:
 class _FakeRetrieval:
     def __init__(self):
         self.last_time_scope = None
+        self.last_question = None
+        self.last_search_terms = []
 
     def search(self, question, *, search_terms=(), time_scope=None, top_k=14):
         self.last_time_scope = time_scope
+        self.last_question = question
+        self.last_search_terms = list(search_terms)
         return {
             "sources": [{
                 "ref": "S1",
@@ -73,6 +77,32 @@ class QAServiceTests(unittest.TestCase):
             qa = SchoolQAService(store, ai, retrieval)
             qa.ask("student", "今天有什么安排？")
             self.assertEqual(retrieval.last_time_scope, "2026-08-31")
+
+    def test_date_query_includes_explicit_personal_course_selection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "qa.sqlite3")
+            store.append_qa_exchange(
+                "student",
+                "通识课程什么时候？我选的是 1  3",
+                "课程1在8月31日，课程3在9月1日。",
+            )
+            ai = _FakeAI()
+            retrieval = _FakeRetrieval()
+            original = ai.plan_query
+
+            def dated_plan(question, history):
+                plan = original(question, history)
+                plan["time_scope"] = "2026-08-31"
+                return plan
+
+            ai.plan_query = dated_plan
+            qa = SchoolQAService(store, ai, retrieval)
+            qa.ask("student", "今天有什么安排？")
+
+            self.assertIn("用户此前明确的个人安排", retrieval.last_question)
+            self.assertIn("通识课程", retrieval.last_search_terms)
+            self.assertIn("课程1", retrieval.last_search_terms)
+            self.assertIn("课程3", retrieval.last_search_terms)
 
     def test_reset_clears_only_conversation(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -94,6 +94,26 @@ class DeepSeekDedupTests(unittest.TestCase):
         self.assertEqual(groups[0]["keep_task_id"], 1)
         self.assertEqual(groups[0]["merge_task_ids"], [2])
 
+    def test_schedule_query_prompt_preserves_user_selected_courses(self):
+        client = DeepSeekClient()
+        response = (
+            '{"standalone_question":"2026年8月31日的全部安排，包括已选通识课程1和3",'
+            '"search_terms":["2026-08-31","通识课程","课程1","课程3"],'
+            '"time_scope":"2026-08-31"}'
+        )
+        history = [
+            {"role": "user", "content": "通识课程什么时候？我选的是1和3"},
+            {"role": "assistant", "content": "课程1在8月31日，课程3在9月1日。"},
+        ]
+        with patch.object(client, "_chat", return_value=response) as chat:
+            plan = client.plan_query("今天有什么事要做？", history)
+
+        self.assertIn("通识课程", plan["standalone_question"])
+        self.assertIn("课程1", plan["search_terms"])
+        system_prompt = chat.call_args.args[0][0]["content"]
+        self.assertIn("用户本人明确表达的个人承诺", system_prompt)
+        self.assertIn("我选了课程1和3", system_prompt)
+
 
 if __name__ == "__main__":
     unittest.main()
